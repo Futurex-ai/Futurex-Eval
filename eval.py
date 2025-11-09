@@ -170,13 +170,12 @@ if __name__ == "__main__":
         "What is the answer?",
     ]
     y_true_1_2 = [
-        set(["A"]),                  # 案例1: 单标签, 完美匹配
-        set(["A", "B"]),        # 案例2: 多标签, 部分匹配 (TP=1, FP=0, FN=1)
+        set(["A"]), 
+        set(["A", "B"]),
     ]
     y_pred_1_2 = [
-        set(["\\boxed{C}"]),                  # 案例1: 单标签, 错误预测
-        set(["\\boxed{D}", "\\boxed{B}"]),        # 案例2: 多标签, 部分匹配 (TP=1, FP=1, FN=1)
+        set(["\\boxed{C}"]), 
+        set(["\\boxed{D}", "\\boxed{B}"]), 
     ]
-    # 调用函数
     y_pred_1_2 = [extract_answer(questions[i], {"prediction": pred}) for i, pred in enumerate(y_pred_1_2)]
     scores_1_2, avg_score_1_2 = estimate_score_level_1_2(questions, y_true_1_2, y_pred_1_2)
