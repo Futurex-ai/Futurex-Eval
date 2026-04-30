@@ -94,11 +94,23 @@ def judge_rank(original_question, extracted_prediction, real_answer):
         MODEL_PREDICTION: {extracted_prediction}
 
         REAL_ANSWER: {real_answer}
-        
-        Remember that for a ranking task, when the two have overlap, you have to answer \\boxed{{Partial Correct}}, even if the order may be different.
+
+        Two items "match" when they refer to the same entity in content, regardless of differences in wording, abbreviation (e.g., "NYC" = "New York"), or language (e.g., "北京" = "Beijing"). Items do NOT need to be exact string matches.
+
+        Decide using these three rules, in order:
+        - Answer \\boxed{{Yes}} if MODEL_PREDICTION and REAL_ANSWER have the same length AND the i-th item of MODEL_PREDICTION matches the i-th item of REAL_ANSWER for every i (both position and content are fully correct).
+        - Answer \\boxed{{No}} if no item in MODEL_PREDICTION matches any item in REAL_ANSWER (the two sets have zero overlap).
+        - Otherwise, answer \\boxed{{Partial Correct}}.
+
+        Important: for \\boxed{{Yes}}, positions must match item by item — set-equivalence with reordered items is \\boxed{{Partial Correct}}, NOT \\boxed{{Yes}}. Example:
+        - MODEL_PREDICTION ["B", "A", "C"] vs REAL_ANSWER ["A", "B", "C"] → \\boxed{{Partial Correct}} (sets are equal, but position 1 has B vs A, position 2 has A vs B).
+
+        Important: as long as at least one item in MODEL_PREDICTION matches at least one item in REAL_ANSWER, you MUST NOT answer \\boxed{{No}} — wrong positions or wrong order do not count as "no match". Examples:
+        - MODEL_PREDICTION ["X", "Y", "Z"] vs REAL_ANSWER ["A", "B", "C"] → \\boxed{{No}} (zero items overlap in content).
+        - MODEL_PREDICTION ["B", "X", "A"] vs REAL_ANSWER ["A", "B", "C"] → \\boxed{{Partial Correct}} (positions are all wrong, but "A" and "B" still match in content, so there IS overlap).
     """
     ans = get_ai_response(prompt_rank)
-    return ans 
+    return ans
 
 def judge_rank_detail(original_question, extracted_prediction, real_answer):
     prompt_rank = f"""
@@ -143,7 +155,7 @@ def judge_rank_overall(original_question, model_prediction, real_answer):
     model_prediction: The model's output response
     real_answer: The answer from the JSON, which is a list
     """
-    # 多项选择题: 短选项 token 列表 (如 ["A","B","C"] / ["^","&","_"]),
+    # 多项选择题: 短选项 token 列表 (如 ["A","B","C"] / ["^","&","_"]), 
     # 题面无顺序,set 完全相等 → 1.0,绕过 LLM。
     # 其他情况(包括多选 partial) 落到下方 LLM 流程,保留现有 0.8 折扣。
     # 榜单题不会被识别成 choice-token 列表。
