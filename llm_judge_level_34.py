@@ -4,6 +4,18 @@ import re
 import os
 from openai import OpenAI
 
+_CHOICE_TOKEN_RE = re.compile(r'^[A-Za-z\[\\\]\^_`]{1,2}$')
+
+def _looks_like_choice_token(s) -> bool:
+    if not isinstance(s, str):
+        return False
+    return bool(_CHOICE_TOKEN_RE.fullmatch(s.strip()))
+
+def _is_multi_choice_list(items) -> bool:
+    if not items:
+        return False
+    return all(_looks_like_choice_token(x) for x in items)
+
 def get_ai_response(question, max_retries=10, max_tokens=5000, temperature=0.):
     api_key = os.getenv("OPENAI_API_KEY")
     base_url = os.getenv("OPENAI_API_BASE")  # 可选，官方API可省略
@@ -131,6 +143,16 @@ def judge_rank_overall(original_question, model_prediction, real_answer):
     model_prediction: The model's output response
     real_answer: The answer from the JSON, which is a list
     """
+    # 多项选择题: 短选项 token 列表 (如 ["A","B","C"] / ["^","&","_"]),
+    # 题面无顺序,set 完全相等 → 1.0,绕过 LLM。
+    # 其他情况(包括多选 partial) 落到下方 LLM 流程,保留现有 0.8 折扣。
+    # 榜单题不会被识别成 choice-token 列表。
+    if _is_multi_choice_list(real_answer) and _is_multi_choice_list(model_prediction):
+        real_answer = sorted(s.strip() for s in real_answer)
+        model_prediction = sorted(s.strip() for s in model_prediction)
+        if real_answer == model_prediction:
+            return 1.0
+
     ans1 = judge_rank(original_question, model_prediction, " ".join(real_answer))
     # print(original_question, model_prediction, real_answer, ans1)
     if 'yes' in ans1.lower():
