@@ -98,7 +98,7 @@ def judge_rank(original_question, extracted_prediction, real_answer):
         Two items "match" when they refer to the same entity in content, regardless of differences in wording, abbreviation (e.g., "NYC" = "New York"), or language (e.g., "北京" = "Beijing"). Items do NOT need to be exact string matches.
 
         Decide using these three rules, in order:
-        - Answer \\boxed{{Yes}} if MODEL_PREDICTION and REAL_ANSWER have the same length AND the i-th item of MODEL_PREDICTION matches the i-th item of REAL_ANSWER for every i (both position and content are fully correct).
+        - Answer \\boxed{{Yes}} if MODEL_PREDICTION and REAL_ANSWER have the same length AND the i-th item of MODEL_PREDICTION matches the i-th item of REAL_ANSWER for every i (both position and content are fully correct). Before outputting \\boxed{{Yes}}, you MUST first explicitly write out the position-by-position comparison (e.g., "Position 1: '...' vs '...' → match; Position 2: '...' vs '...' → match; ...") covering every position; only after every position is verified to match should you output \\boxed{{Yes}}.
         - Otherwise, answer \\boxed{{No}}.
 
         Important: for \\boxed{{Yes}}, positions must match item by item — set-equivalence with reordered items is \\boxed{{No}}, NOT \\boxed{{Yes}}. Example:
