@@ -87,7 +87,7 @@ def extract_num_from_string(s: str) -> float:
 
 def judge_rank(original_question, extracted_prediction, real_answer):
     prompt_rank = f"""
-        You're a judger to judge whether the model's prediction aligns with the real answer. You will be given the original question, the model prediction, and the real answer. Please judge if the model prediction is correct. Only answer \\boxed{{Yes}} or \\boxed{{No}} or \\boxed{{Partial Correct}}.
+        You're a judger to judge whether the model's prediction is completely aligned with the real answer. You will be given the original question, the model prediction, and the real answer. Please judge if the model prediction is completely correct. Only answer \\boxed{{Yes}} or \\boxed{{No}}.
 
         ORIGINAL_QUESTION: {original_question}
 
@@ -99,15 +99,10 @@ def judge_rank(original_question, extracted_prediction, real_answer):
 
         Decide using these three rules, in order:
         - Answer \\boxed{{Yes}} if MODEL_PREDICTION and REAL_ANSWER have the same length AND the i-th item of MODEL_PREDICTION matches the i-th item of REAL_ANSWER for every i (both position and content are fully correct).
-        - Answer \\boxed{{No}} if no item in MODEL_PREDICTION matches any item in REAL_ANSWER (the two sets have zero overlap).
-        - Otherwise, answer \\boxed{{Partial Correct}}.
+        - Otherwise, answer \\boxed{{No}}.
 
-        Important: for \\boxed{{Yes}}, positions must match item by item — set-equivalence with reordered items is \\boxed{{Partial Correct}}, NOT \\boxed{{Yes}}. Example:
-        - MODEL_PREDICTION ["B", "A", "C"] vs REAL_ANSWER ["A", "B", "C"] → \\boxed{{Partial Correct}} (sets are equal, but position 1 has B vs A, position 2 has A vs B).
-
-        Important: as long as at least one item in MODEL_PREDICTION matches at least one item in REAL_ANSWER, you MUST NOT answer \\boxed{{No}} — wrong positions or wrong order do not count as "no match". Examples:
-        - MODEL_PREDICTION ["X", "Y", "Z"] vs REAL_ANSWER ["A", "B", "C"] → \\boxed{{No}} (zero items overlap in content).
-        - MODEL_PREDICTION ["B", "X", "A"] vs REAL_ANSWER ["A", "B", "C"] → \\boxed{{Partial Correct}} (positions are all wrong, but "A" and "B" still match in content, so there IS overlap).
+        Important: for \\boxed{{Yes}}, positions must match item by item — set-equivalence with reordered items is \\boxed{{No}}, NOT \\boxed{{Yes}}. Example:
+        - MODEL_PREDICTION ["B", "A", "C"] vs REAL_ANSWER ["A", "B", "C"] → \\boxed{{No}} (sets are equal, but position 1 has B vs A, position 2 has A vs B).
     """
     ans = get_ai_response(prompt_rank)
     return ans
@@ -134,6 +129,8 @@ def judge_str_match(extracted_prediction, real_answer):
     :param real_answer: The ground truth answer
     :return: Match result (1.0 for match, 0.0 for no match)
     """
+    if extracted_prediction.strip() == real_answer.strip():
+        return 1.0
     prompt = f"""
         Please judge whether the model's prediction matches the real answer. Only compare the content, ignore the language. For example, "New York" and "NYC" are considered a match. Only answer \\boxed{{Yes}} or \\boxed{{No}}. 
         If they match, answer \\boxed{{Yes}}. 
