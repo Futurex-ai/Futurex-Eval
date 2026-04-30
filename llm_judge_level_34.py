@@ -102,7 +102,10 @@ def judge_rank(original_question, extracted_prediction, real_answer):
         - Otherwise, answer \\boxed{{No}}.
 
         Important: for \\boxed{{Yes}}, positions must match item by item — set-equivalence with reordered items is \\boxed{{No}}, NOT \\boxed{{Yes}}. Example:
-        - MODEL_PREDICTION ["B", "A", "C"] vs REAL_ANSWER ["A", "B", "C"] → \\boxed{{No}} (sets are equal, but position 1 has B vs A, position 2 has A vs B).
+        - MODEL_PREDICTION ["item2", "item1", "item3"] vs REAL_ANSWER ["item1", "item2", "item3"] → \\boxed{{No}} (sets are equal, but position 1 has item2 vs item1, position 2 has item1 vs item2).
+
+        Important: for \\boxed{{Yes}}, MODEL_PREDICTION and REAL_ANSWER must have the same length. Example:
+        - MODEL_PREDICTION ["item1", "item2", "item3", "item4"] vs REAL_ANSWER ["item1", "item2", "item3"] → \\boxed{{No}} (do not have the same length).
     """
     ans = get_ai_response(prompt_rank)
     return ans
