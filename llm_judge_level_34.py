@@ -132,6 +132,8 @@ def judge_str_match(extracted_prediction, real_answer):
     :param real_answer: The ground truth answer
     :return: Match result (1.0 for match, 0.0 for no match)
     """
+    if isinstance(real_answer, int):
+        extracted_prediction, real_answer = str(extracted_prediction), str(real_answer)
     if extracted_prediction.strip() == real_answer.strip():
         return 1.0
     prompt = f"""
