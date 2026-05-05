@@ -1,4 +1,18 @@
+import os
 import re
+from collections import Counter
+
+def wrap_prediction_to_list(prediction, gt_len: int):
+    """
+    把 prediction 包成 judge_level_34_score 期望的 list 格式。
+
+    当模型把多项答案输出成"item1, item2, item3"这种逗号串、而 gt 是 list-of-N 时,
+    用 ", " 严格 split:仅当 prediction.count(", ") 恰好 == gt_len-1 才拆,
+    避免把 "Smith, Inc." 这种实体内逗号误拆。其它情况一律包成单元素 list。
+    """
+    if isinstance(prediction, str) and gt_len > 1 and prediction.count(", ") == gt_len - 1:
+        return [s.strip() for s in prediction.split(", ")]
+    return [prediction]
 
 def to_float(s: str) -> float:
     """

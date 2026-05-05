@@ -4,6 +4,18 @@ import re
 import os
 from openai import OpenAI
 
+_CHOICE_TOKEN_RE = re.compile(r'^[A-Za-z\[\\\]\^_`]{1,2}$')
+
+def _looks_like_choice_token(s) -> bool:
+    if not isinstance(s, str):
+        return False
+    return bool(_CHOICE_TOKEN_RE.fullmatch(s.strip()))
+
+def _is_multi_choice_list(items) -> bool:
+    if not items:
+        return False
+    return all(_looks_like_choice_token(x) for x in items)
+
 def get_ai_response(question, max_retries=10, max_tokens=5000, temperature=0.):
     api_key = os.getenv("OPENAI_API_KEY")
     base_url = os.getenv("OPENAI_API_BASE")  # 可选，官方API可省略
@@ -75,18 +87,28 @@ def extract_num_from_string(s: str) -> float:
 
 def judge_rank(original_question, extracted_prediction, real_answer):
     prompt_rank = f"""
-        You're a judger to judge whether the model's prediction aligns with the real answer. You will be given the original question, the model prediction, and the real answer. Please judge if the model prediction is correct. Only answer \\boxed{{Yes}} or \\boxed{{No}} or \\boxed{{Partial Correct}}.
+        You're a judger to judge whether the model's prediction is completely aligned with the real answer. You will be given the original question, the model prediction, and the real answer. Please judge if the model prediction is completely correct. Only answer \\boxed{{Yes}} or \\boxed{{No}}.
 
         ORIGINAL_QUESTION: {original_question}
 
         MODEL_PREDICTION: {extracted_prediction}
 
         REAL_ANSWER: {real_answer}
-        
-        Remember that for a ranking task, when the two have overlap, you have to answer \\boxed{{Partial Correct}}, even if the order may be different.
+
+        Two items "match" when they refer to the same entity in content, regardless of differences in wording, abbreviation (e.g., "NYC" = "New York"), or language (e.g., "北京" = "Beijing"). Items do NOT need to be exact string matches.
+
+        Decide using these three rules, in order:
+        - Answer \\boxed{{Yes}} if MODEL_PREDICTION and REAL_ANSWER have the same length AND the i-th item of MODEL_PREDICTION matches the i-th item of REAL_ANSWER for every i (both position and content are fully correct). Before outputting \\boxed{{Yes}}, you MUST first explicitly write out the position-by-position comparison (e.g., "Position 1: '...' vs '...' → match; Position 2: '...' vs '...' → match; ...") covering every position; only after every position is verified to match should you output \\boxed{{Yes}}.
+        - Otherwise, answer \\boxed{{No}}.
+
+        Important: for \\boxed{{Yes}}, positions must match item by item — set-equivalence with reordered items is \\boxed{{No}}, NOT \\boxed{{Yes}}. Example:
+        - MODEL_PREDICTION ["item2", "item1", "item3"] vs REAL_ANSWER ["item1", "item2", "item3"] → \\boxed{{No}} (sets are equal, but position 1 has item2 vs item1, position 2 has item1 vs item2).
+
+        Important: for \\boxed{{Yes}}, MODEL_PREDICTION and REAL_ANSWER must have the same length. Example:
+        - MODEL_PREDICTION ["item1", "item2", "item3", "item4"] vs REAL_ANSWER ["item1", "item2", "item3"] → \\boxed{{No}} (do not have the same length).
     """
     ans = get_ai_response(prompt_rank)
-    return ans 
+    return ans
 
 def judge_rank_detail(original_question, extracted_prediction, real_answer):
     prompt_rank = f"""
@@ -110,6 +132,10 @@ def judge_str_match(extracted_prediction, real_answer):
     :param real_answer: The ground truth answer
     :return: Match result (1.0 for match, 0.0 for no match)
     """
+    if isinstance(real_answer, int):
+        extracted_prediction, real_answer = str(extracted_prediction), str(real_answer)
+    if extracted_prediction.strip() == real_answer.strip():
+        return 1.0
     prompt = f"""
         Please judge whether the model's prediction matches the real answer. Only compare the content, ignore the language. For example, "New York" and "NYC" are considered a match. Only answer \\boxed{{Yes}} or \\boxed{{No}}. 
         If they match, answer \\boxed{{Yes}}. 
@@ -131,14 +157,24 @@ def judge_rank_overall(original_question, model_prediction, real_answer):
     model_prediction: The model's output response
     real_answer: The answer from the JSON, which is a list
     """
-    ans1 = judge_rank(original_question, model_prediction, " ".join(real_answer))
-    # print(original_question, model_prediction, real_answer, ans1)
+    # 多项选择题: 短选项 token 列表 (如 ["A","B","C"] / ["^","&","_"]), 
+    # 题面无顺序,set 完全相等 → 1.0,绕过 LLM。
+    # 其他情况(包括多选 partial) 落到下方 LLM 流程,保留现有 0.8 折扣。
+    # 榜单题不会被识别成 choice-token 列表。
+    if _is_multi_choice_list(real_answer) and _is_multi_choice_list(model_prediction):
+        real_answer = sorted(s.strip() for s in real_answer)
+        model_prediction = sorted(s.strip() for s in model_prediction)
+        if real_answer == model_prediction:
+            return 1.0
+
+    # 把 real_answer 以 list 形式喂进 prompt,与 model_prediction 边界对齐;
+    # 之前用 " ".join 会让含空格的 item (如 "AnkiMobile Flashcards") 边界丢失,
+    # LLM 无法可靠切回 item,在偏门实体上会逐位置"盖章 match"产生假 Yes。
+    ans1 = judge_rank(original_question, model_prediction, real_answer)
     if 'yes' in ans1.lower():
-        return 1.0 
-    elif 'no' in ans1.lower():
-        return 0.0 
+        return 1.0
     else:
-        ans2 = judge_rank_detail(original_question, model_prediction, " ".join(real_answer))
+        ans2 = judge_rank_detail(original_question, model_prediction, real_answer)
         match = re.search(r"\\boxed\{(\d+)\}", ans2)
         number = match.group(1)
         return (int(number)/float(len(real_answer)))*0.8

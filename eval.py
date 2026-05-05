@@ -6,7 +6,7 @@ import traceback
 import concurrent.futures
 import re
 from llm_judge_level_34 import judge_level_34_score
-from utils import to_float
+from utils import to_float, wrap_prediction_to_list
 import os
 from openai import OpenAI
 
@@ -129,9 +129,28 @@ def estimate_score_level_1_2(
 def estimate_score_level_3_4(questions, y_true_raw, y_pred_raw, stds, max_workers=8):
     """
     Estimates the score for Type B questions using a thread pool and caching.
+
+    ground_truth 和 prediction 的格式统一:
+      1. ground_truth 归一: 包成 list + 单元素 str/int → float (走数值评分分支),
+         bool 不转 (避免 True/False 被当 1.0/0.0); 多元素榜单题不动。
+      2. prediction 包装: 调 wrap_prediction_to_list,在 gt 多元素 + pred 是 ", "
+         严格分隔字符串时拆分,否则单元素 list 包装。
+
+    调用方传原始 (question, gt, pred, std) 即可,无需先做归一/包装。
     """
-    # 2. Add lru_cache decorator to the worker function
-    # maxsize=None means the cache can grow indefinitely, you can also set a specific value, e.g., maxsize=1024
+    def _normalize_gt(answer):
+        if not isinstance(answer, list):
+            answer = [answer]
+        if len(answer) == 1:
+            if isinstance(answer[0], str):
+                try:
+                    answer[0] = float(answer[0])
+                except ValueError:
+                    pass
+            elif isinstance(answer[0], int) and not isinstance(answer[0], bool):
+                answer[0] = float(answer[0])
+        return answer
+
     def worker(question, y_true, y_pred, std):
         """
         A wrapper function to call the judging API. Results are now cached.
@@ -139,11 +158,12 @@ def estimate_score_level_3_4(questions, y_true_raw, y_pred_raw, stds, max_worker
         try:
             if std is None:
                 std = 1.0
-            # judge_level_34_score will only be called the first time the (question, y_true, y_pred) combination appears
+            gt = _normalize_gt(y_true)
+            pred = wrap_prediction_to_list(y_pred, len(gt))
             return judge_level_34_score(
                 originaL_question=question,
-                model_prediction=y_pred,
-                real_answer=y_true,
+                model_prediction=pred,
+                real_answer=gt,
                 std=std
             )
         except Exception as e:
@@ -154,14 +174,20 @@ def estimate_score_level_3_4(questions, y_true_raw, y_pred_raw, stds, max_worker
     if not all([questions, y_true_raw, y_pred_raw, stds]):
         return 0.0
 
-    all_scores = 0
+    all_scores = [None] * len(questions)
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # The map function will map identical tasks (worker calls with the same parameters) to the cached results
-       results = executor.map(worker, questions, y_true_raw, y_pred_raw, stds)
-       all_scores = list(results)
+        future_to_idx = {
+            executor.submit(worker, q, yt, yp, s): i
+            for i, (q, yt, yp, s) in enumerate(zip(questions, y_true_raw, y_pred_raw, stds))
+        }
+        from tqdm import tqdm
+        for future in tqdm(concurrent.futures.as_completed(future_to_idx),
+                           total=len(future_to_idx), desc="LLM 判分进度"):
+            idx = future_to_idx[future]
+            all_scores[idx] = future.result()
 
     avg_score = sum(all_scores) / len(questions) if questions else 0.0
-    
+
     return all_scores, avg_score
 
 if __name__ == "__main__":
