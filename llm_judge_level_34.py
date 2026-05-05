@@ -167,14 +167,14 @@ def judge_rank_overall(original_question, model_prediction, real_answer):
         if real_answer == model_prediction:
             return 1.0
 
-    ans1 = judge_rank(original_question, model_prediction, " ".join(real_answer))
-    # print(original_question, model_prediction, real_answer, ans1)
+    # 把 real_answer 以 list 形式喂进 prompt,与 model_prediction 边界对齐;
+    # 之前用 " ".join 会让含空格的 item (如 "AnkiMobile Flashcards") 边界丢失,
+    # LLM 无法可靠切回 item,在偏门实体上会逐位置"盖章 match"产生假 Yes。
+    ans1 = judge_rank(original_question, model_prediction, real_answer)
     if 'yes' in ans1.lower():
-        return 1.0 
-    elif 'no' in ans1.lower():
-        return 0.0 
+        return 1.0
     else:
-        ans2 = judge_rank_detail(original_question, model_prediction, " ".join(real_answer))
+        ans2 = judge_rank_detail(original_question, model_prediction, real_answer)
         match = re.search(r"\\boxed\{(\d+)\}", ans2)
         number = match.group(1)
         return (int(number)/float(len(real_answer)))*0.8
