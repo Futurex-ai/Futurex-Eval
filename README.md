@@ -30,7 +30,7 @@ export OPENAI_API_MODEL="YOUR_API_MODEL" # e.g. gpt-4.1 / volc-deepseek-v3
 - `llm_judge_level_34.py`: L3/L4 judge implementation.
 - `utils.py`: number parsing helpers (`to_float`, `is_number`).
 
-## API Usage
+## Usage
 
 ### Level 1/2
 
