@@ -4,6 +4,21 @@ import re
 import os
 from openai import OpenAI
 
+_CHOICE_TOKEN_RE = re.compile(r'^[A-Za-z\[\\\]\^_`]{1,2}$')
+
+
+def _looks_like_choice_token(s) -> bool:
+    if not isinstance(s, str):
+        return False
+    return bool(_CHOICE_TOKEN_RE.fullmatch(s.strip()))
+
+
+def _is_multi_choice_list(items) -> bool:
+    if not items:
+        return False
+    return all(_looks_like_choice_token(x) for x in items)
+
+
 def get_ai_response(question, max_retries=10, max_tokens=5000, temperature=0.):
     api_key = os.getenv("OPENAI_API_KEY")
     base_url = os.getenv("OPENAI_API_BASE")  # 可选，官方API可省略
@@ -38,14 +53,6 @@ def get_ai_response(question, max_retries=10, max_tokens=5000, temperature=0.):
             # 提取回复内容
             return response.choices[0].message.content
             
-        except (APIError, APITimeoutError, APIConnectionError) as e:
-            # 捕获OpenAI SDK的常见异常
-            if "rate limit" in str(e).lower():
-                # 处理速率限制异常
-                print(f"Rate limit error: {str(e)}, retrying... (attempt {attempt})")
-            else:
-                # 其他API异常，重试
-                print(f"Request failed: {str(e)}, retrying... (attempt {attempt})")
         except Exception as e:
             # 捕获其他未知异常
             print(f"Unexpected error: {str(e)}, retrying... (attempt {attempt})")
@@ -75,15 +82,28 @@ def extract_num_from_string(s: str) -> float:
 
 def judge_rank(original_question, extracted_prediction, real_answer):
     prompt_rank = f"""
-        You're a judger to judge whether the model's prediction aligns with the real answer. You will be given the original question, the model prediction, and the real answer. Please judge if the model prediction is correct. Only answer \\boxed{{Yes}} or \\boxed{{No}} or \\boxed{{Partial Correct}}.
+        You're a judger to judge whether the model's prediction is completely aligned with the real answer. You will be given the original question, the model prediction, and the real answer. Please judge if the model prediction is completely correct. Only answer \\boxed{{Yes}} or \\boxed{{No}}.
 
         ORIGINAL_QUESTION: {original_question}
 
         MODEL_PREDICTION: {extracted_prediction}
 
         REAL_ANSWER: {real_answer}
-        
-        Remember that for a ranking task, when the two have overlap, you have to answer \\boxed{{Partial Correct}}, even if the order may be different.
+
+        Two items "match" when they refer to the same entity in content, regardless of differences in wording, abbreviation, or language. Items do NOT need to be exact string matches.
+
+        Decide using these rules:
+        - Answer \\boxed{{Yes}} if MODEL_PREDICTION and REAL_ANSWER have the same length AND the i-th item of MODEL_PREDICTION matches the i-th item of REAL_ANSWER for every i.
+        - Before outputting \\boxed{{Yes}}, you MUST explicitly write out the position-by-position comparison for every position.
+        - Otherwise, answer \\boxed{{No}}.
+
+        Important: for \\boxed{{Yes}}, positions must match item by item. Set-equivalence with reordered items is \\boxed{{No}}, NOT \\boxed{{Yes}}.
+        Example:
+        - MODEL_PREDICTION ["item2", "item1", "item3"] vs REAL_ANSWER ["item1", "item2", "item3"] -> \\boxed{{No}}
+
+        Important: for \\boxed{{Yes}}, MODEL_PREDICTION and REAL_ANSWER must have the same length.
+        Example:
+        - MODEL_PREDICTION ["item1", "item2", "item3", "item4"] vs REAL_ANSWER ["item1", "item2", "item3"] -> \\boxed{{No}}
     """
     ans = get_ai_response(prompt_rank)
     return ans 
@@ -110,6 +130,8 @@ def judge_str_match(extracted_prediction, real_answer):
     :param real_answer: The ground truth answer
     :return: Match result (1.0 for match, 0.0 for no match)
     """
+    if isinstance(real_answer, int):
+        extracted_prediction, real_answer = str(extracted_prediction), str(real_answer)
     prompt = f"""
         Please judge whether the model's prediction matches the real answer. Only compare the content, ignore the language. For example, "New York" and "NYC" are considered a match. Only answer \\boxed{{Yes}} or \\boxed{{No}}. 
         If they match, answer \\boxed{{Yes}}. 
@@ -131,14 +153,18 @@ def judge_rank_overall(original_question, model_prediction, real_answer):
     model_prediction: The model's output response
     real_answer: The answer from the JSON, which is a list
     """
-    ans1 = judge_rank(original_question, model_prediction, " ".join(real_answer))
+    if _is_multi_choice_list(real_answer) and _is_multi_choice_list(model_prediction):
+        real_answer = sorted(s.strip() for s in real_answer)
+        model_prediction = sorted(s.strip() for s in model_prediction)
+        if real_answer == model_prediction:
+            return 1.0
+
+    ans1 = judge_rank(original_question, model_prediction, real_answer)
     # print(original_question, model_prediction, real_answer, ans1)
     if 'yes' in ans1.lower():
         return 1.0 
-    elif 'no' in ans1.lower():
-        return 0.0 
     else:
-        ans2 = judge_rank_detail(original_question, model_prediction, " ".join(real_answer))
+        ans2 = judge_rank_detail(original_question, model_prediction, real_answer)
         match = re.search(r"\\boxed\{(\d+)\}", ans2)
         number = match.group(1)
         return (int(number)/float(len(real_answer)))*0.8
@@ -148,8 +174,8 @@ def judge_number_overall(model_prediction, real_answer, std=1.0):
 
 def judge_level_34_score(originaL_question, model_prediction, real_answer, std=1.0):
     if len(real_answer) == 1:
-        if isinstance(real_answer[0], float):
-            if isinstance(model_prediction[0], float):
+        if isinstance(real_answer[0], (float, int)) and not isinstance(real_answer[0], bool):
+            if isinstance(model_prediction[0], (float, int)) and not isinstance(model_prediction[0], bool):
                 return judge_number_overall(model_prediction[0], real_answer[0], std)
             else:
                 extracted_prediction = extract_num_from_string(model_prediction[0])

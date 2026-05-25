@@ -28,14 +28,15 @@ def extract_by_gpt(questions: List[str], draft_answers: List[str]):
     
     prompt = "Given the question and a draft answer, please extract the answer from the draft answer. If the answer is wrapped in \\boxed{{}}, \\text{{}} or other format, please extract the content inside the braces. Finally, identify if the answer is a number. Please only output the extracted answer and whether the answer is an number, without outputing other any content. For example:\n$115\nyes\nAnother example:\nBeijing\nNo \n\nQeustion: {question}\n\nDraft Answer: {answer}"
     
-    @retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(10), before_sleep=log_before_retry)
+    @retry(wait=wait_random_exponential(min=1, max=20), stop=stop_after_attempt(4), before_sleep=log_before_retry)
     def process_single(question, draft_answer):
         try:
             response = client.chat.completions.create(
                 model=model_name,
                 messages=[
                     {"role": "user", "content": prompt.format(question=question, answer=draft_answer)}
-                ]
+                ],
+                timeout=90,
             ).choices[0].message.content
             return response
         except Exception as e:
@@ -126,19 +127,46 @@ def estimate_score_level_1_2(
         return 0.0
     return f1_scores, sum(f1_scores) / len(f1_scores)
 
+
+def estimate_type_a_score(
+    y_true_raw: List[Set[str]],
+    y_pred_raw: List[Set[str]],
+) -> Dict[str, Any]:
+    """
+    Backward-compatible API aligned with the local evaluator.
+    """
+    return estimate_score_level_1_2([], y_true_raw, y_pred_raw)
+
 def estimate_score_level_3_4(questions, y_true_raw, y_pred_raw, stds, max_workers=8):
     """
     Estimates the score for Type B questions using a thread pool and caching.
     """
     # 2. Add lru_cache decorator to the worker function
     # maxsize=None means the cache can grow indefinitely, you can also set a specific value, e.g., maxsize=1024
+    def _normalize_gt(answer):
+        if not isinstance(answer, list):
+            answer = [answer]
+        if len(answer) == 1:
+            if isinstance(answer[0], str):
+                try:
+                    answer[0] = float(answer[0])
+                except ValueError:
+                    pass
+            elif isinstance(answer[0], int) and not isinstance(answer[0], bool):
+                answer[0] = float(answer[0])
+        return answer
+
     def worker(question, y_true, y_pred, std):
         """
         A wrapper function to call the judging API. Results are now cached.
         """
         try:
-            if std is None:
-                std = 1.0
+            y_true = _normalize_gt(y_true)
+            if type(y_true[0]) in [float, int]:
+                if y_true[0] == 0:
+                    std = 0.01
+                else:
+                    std = 0.05 * y_true[0]
             # judge_level_34_score will only be called the first time the (question, y_true, y_pred) combination appears
             return judge_level_34_score(
                 originaL_question=question,
@@ -163,6 +191,13 @@ def estimate_score_level_3_4(questions, y_true_raw, y_pred_raw, stds, max_worker
     avg_score = sum(all_scores) / len(questions) if questions else 0.0
     
     return all_scores, avg_score
+
+
+def estimate_type_b_score(questions, y_true_raw, y_pred_raw, stds, max_workers=8):
+    """
+    Backward-compatible API aligned with the local evaluator.
+    """
+    return estimate_score_level_3_4(questions, y_true_raw, y_pred_raw, stds, max_workers=max_workers)
 
 if __name__ == "__main__":
     questions = [
