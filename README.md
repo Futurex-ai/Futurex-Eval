@@ -1,6 +1,9 @@
 # FutureX Evaluation Scripts
 
-This repository contains the core scoring functions for FutureX evaluation:
+This repository contains the evaluation code for the FutureX benchmark from the paper
+[FutureX: An Advanced Live Benchmark for LLM Agents in Future Prediction](https://arxiv.org/abs/2508.11987).
+
+It provides the core scoring functions used in FutureX evaluation:
 
 - Level 1/2 (Type-A style): set/multi-label F1 scoring.
 - Level 3/4 (Type-B style): LLM-as-judge scoring for numeric, string, and ranking answers.
@@ -59,13 +62,3 @@ print(scores, avg)
 - Numeric `std` is auto-derived for numeric GT (`0.05 * gt`, with `0 -> 0.01`).
 - Multi-choice ranking answers (e.g. `["A", "B", "C"]`) support order-insensitive exact match shortcut.
 - Non-exact ranking answers use overlap-based partial credit.
-
-## `sync_from_local` Branch Update
-
-The `sync_from_local` branch aligns remote L3/L4 behavior with the local evaluator:
-
-- consistent L3/L4 judge branches in `llm_judge_level_34.py`
-- consistent Type-B preprocessing and `std` handling in `eval.py`
-- backward-compatible entrypoints:
-  - `estimate_type_a_score(...)`
-  - `estimate_type_b_score(...)`
