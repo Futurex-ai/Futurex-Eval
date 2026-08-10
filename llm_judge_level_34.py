@@ -2,9 +2,17 @@ import requests
 import time
 import re
 import os
+import hashlib
+import json
+import diskcache
 from openai import OpenAI
+from llm_config import cache_namespace, get_llm_config, get_llm_timeout
 
 _CHOICE_TOKEN_RE = re.compile(r'^[A-Za-z\[\\\]\^_`]{1,2}$')
+JUDGE_PROMPT_VERSION = "level-34-judge-v1"
+_JUDGE_CACHE = diskcache.Cache(
+    f"./{cache_namespace('level_34_judge_diskcache', JUDGE_PROMPT_VERSION)}"
+)
 
 
 def _looks_like_choice_token(s) -> bool:
@@ -19,18 +27,34 @@ def _is_multi_choice_list(items) -> bool:
     return all(_looks_like_choice_token(x) for x in items)
 
 
-def get_ai_response(question, max_retries=10, max_tokens=5000, temperature=0.):
-    api_key = os.getenv("OPENAI_API_KEY")
-    base_url = os.getenv("OPENAI_API_BASE")  # 可选，官方API可省略
-    model = os.getenv("OPENAI_API_MODEL")
+def get_ai_response(question, max_retries=3, max_tokens=5000, temperature=0.):
+    api_key, base_url, model = get_llm_config()
     
     if not api_key or not model:
         raise ValueError("OPENAI_API_KEY or OPENAI_API_MODEL environment variable not found")
+    cache_key = hashlib.sha256(
+        json.dumps(
+            {
+                "question": question,
+                "model": model,
+                "base_url": base_url,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "prompt_version": JUDGE_PROMPT_VERSION,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    cached = _JUDGE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
 
     # 初始化OpenAI客户端
     client = OpenAI(
         api_key=api_key,
-        base_url=base_url  # 官方API无需设置，自定义服务需指定
+        base_url=base_url,
+        timeout=get_llm_timeout(),
     )
 
     messages = [{"role": "user", "content": question}]
@@ -51,7 +75,10 @@ def get_ai_response(question, max_retries=10, max_tokens=5000, temperature=0.):
             )
             
             # 提取回复内容
-            return response.choices[0].message.content
+            content = response.choices[0].message.content
+            if content:
+                _JUDGE_CACHE.set(cache_key, content)
+                return content
             
         except Exception as e:
             # 捕获其他未知异常
@@ -168,6 +195,41 @@ def judge_rank_overall(original_question, model_prediction, real_answer):
         match = re.search(r"\\boxed\{(\d+)\}", ans2)
         number = match.group(1)
         return (int(number)/float(len(real_answer)))*0.8
+
+
+def judge_unordered_set_overall(original_question, model_prediction, real_answer):
+    """Score a set of entities without imposing an order on the submission."""
+    prediction = list(dict.fromkeys(str(item).strip() for item in model_prediction))
+    answer = list(dict.fromkeys(str(item).strip() for item in real_answer))
+    if not answer:
+        return 1.0 if not prediction else 0.0
+
+    if {item.casefold() for item in prediction} == {item.casefold() for item in answer}:
+        return 1.0
+
+    prompt = f"""
+You are scoring an unordered set answer. Compare entities by meaning, allowing
+aliases, abbreviations, and language differences. Order is irrelevant. Count
+each entity at most once. Return only \\boxed{{N}}, where N is the number of
+one-to-one semantic matches between the two sets.
+
+QUESTION:
+{original_question}
+
+MODEL_SET:
+{prediction}
+
+GROUND_TRUTH_SET:
+{answer}
+"""
+    # DeepSeek V4 Flash can use an internal reasoning trace before emitting
+    # the boxed match count, so a small output budget can leave content empty.
+    response = get_ai_response(prompt, max_tokens=512)
+    match = re.search(r"\\boxed\{(\d+)\}", response or "")
+    if not match:
+        return 0.0
+    matched = min(int(match.group(1)), len(answer), len(prediction))
+    return 1.0 if matched == len(answer) == len(prediction) else matched / len(answer) * 0.8
 
 def judge_number_overall(model_prediction, real_answer, std=1.0):
     return max(0, 1-((model_prediction-real_answer)/std)**2)

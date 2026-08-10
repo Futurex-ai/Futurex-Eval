@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+*diskcache*/
+leaderboard_*.json
+router_audit_*.json
+mirocorgi_*_eval.json

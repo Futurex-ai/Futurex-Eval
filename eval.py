@@ -1,11 +1,12 @@
 from typing import List, Set, Dict, Any
 from tenacity import retry, stop_after_attempt, wait_random_exponential
-from smolagents import AzureOpenAIServerModel
 from concurrent.futures import ThreadPoolExecutor
 import traceback
 import concurrent.futures
 import re
-from llm_judge_level_34 import judge_level_34_score
+from llm_judge_level_34 import judge_level_34_score, judge_unordered_set_overall
+from llm_config import get_llm_config, get_llm_timeout
+from metric_router import MetricRoute, route_questions
 from utils import to_float
 import os
 from openai import OpenAI
@@ -17,13 +18,12 @@ def log_before_retry(retry_state):
     )
 
 def extract_by_gpt(questions: List[str], draft_answers: List[str]):
-    api_key = os.getenv("OPENAI_API_KEY")
-    model_name = os.getenv("OPENAI_API_MODEL")
-    base_url = os.getenv("OPENAI_API_BASE")  # Optional, for custom API addresses (e.g., locally deployed models)
+    api_key, base_url, model_name = get_llm_config()
     # Create a general OpenAI client
     client = OpenAI(
         api_key=api_key,
-        base_url=base_url  # If using the official OpenAI API, this parameter can be omitted (defaults to the official address)
+        base_url=base_url,
+        timeout=get_llm_timeout(),
     )
     
     prompt = "Given the question and a draft answer, please extract the answer from the draft answer. If the answer is wrapped in \\boxed{{}}, \\text{{}} or other format, please extract the content inside the braces. Finally, identify if the answer is a number. Please only output the extracted answer and whether the answer is an number, without outputing other any content. For example:\n$115\nyes\nAnother example:\nBeijing\nNo \n\nQeustion: {question}\n\nDraft Answer: {answer}"
@@ -70,6 +70,39 @@ def extract_answer(title, event):
             event['prediction'] = [event['prediction']] # unify the format
     
     return event['prediction']
+
+
+def extract_answers(titles, events):
+    """Batch version of ``extract_answer`` for a submission's full week."""
+    if len(titles) != len(events):
+        raise ValueError("titles and events must align")
+
+    drafts = []
+    for event in events:
+        if "answer" in event and "prediction" not in event:
+            event["prediction"] = event["answer"]
+        prediction = event.get("prediction")
+        if isinstance(prediction, list):
+            prediction = prediction[0] if prediction else None
+        drafts.append(prediction)
+
+    valid_indices = [index for index, draft in enumerate(drafts) if draft is not None]
+    extracted = [None] * len(events)
+    if valid_indices:
+        results = extract_by_gpt(
+            [titles[index] + "\n" for index in valid_indices],
+            [drafts[index] for index in valid_indices],
+        )
+        for index, result in zip(valid_indices, results):
+            answer = "\n".join(result.split("\n")[:-1])
+            is_number = result.split("\n")[-1].strip()
+            if is_number.lower() == "yes":
+                extracted[index] = [to_float(answer)]
+            elif "," in answer:
+                extracted[index] = [item.strip() for item in answer.split(",")]
+            else:
+                extracted[index] = [answer]
+    return extracted
 
 def estimate_score_level_1_2(
     questions: List[str],
@@ -198,6 +231,91 @@ def estimate_type_b_score(questions, y_true_raw, y_pred_raw, stds, max_workers=8
     Backward-compatible API aligned with the local evaluator.
     """
     return estimate_score_level_3_4(questions, y_true_raw, y_pred_raw, stds, max_workers=max_workers)
+
+
+def prewarm_metric_routes(
+    questions,
+    ground_truths,
+    *,
+    levels=None,
+    question_ids=None,
+):
+    """Route every question once before scoring any model submissions.
+
+    ``route_questions`` caches by question/GT/model, so subsequent model
+    submissions reuse these results without another router API call.
+    """
+    return route_questions(
+        questions,
+        ground_truths,
+        levels=levels,
+        question_ids=question_ids,
+    )
+
+
+def estimate_routed_scores(
+    questions,
+    y_true_raw,
+    y_pred_raw,
+    stds,
+    *,
+    levels=None,
+    question_ids=None,
+):
+    """Score predictions using one cached LLM metric route per question.
+
+    Existing Type-A and Type-B functions remain unchanged.  Only routes marked
+    ``unordered_set`` use the new scorer.
+    """
+    if not (len(questions) == len(y_true_raw) == len(y_pred_raw) == len(stds)):
+        raise ValueError("questions, ground truths, predictions, and stds must align")
+
+    routes = prewarm_metric_routes(
+        questions,
+        y_true_raw,
+        levels=levels,
+        question_ids=question_ids,
+    )
+    scores = [None] * len(questions)
+    route_indices = {
+        metric: [index for index, route in enumerate(routes) if route.metric == metric]
+        for metric in ("legacy_type_a", "legacy_type_b", "unordered_set")
+    }
+
+    type_a_indices = route_indices["legacy_type_a"]
+    if type_a_indices:
+        type_a_scores, _ = estimate_type_a_score(
+            [y_true_raw[index] for index in type_a_indices],
+            [y_pred_raw[index] for index in type_a_indices],
+        )
+        for index, score in zip(type_a_indices, type_a_scores):
+            scores[index] = score
+
+    type_b_indices = route_indices["legacy_type_b"]
+    if type_b_indices:
+        type_b_scores, _ = estimate_type_b_score(
+            [questions[index] for index in type_b_indices],
+            [y_true_raw[index] for index in type_b_indices],
+            [y_pred_raw[index] for index in type_b_indices],
+            [stds[index] for index in type_b_indices],
+        )
+        for index, score in zip(type_b_indices, type_b_scores):
+            scores[index] = score
+
+    unordered_indices = route_indices["unordered_set"]
+    if unordered_indices:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            unordered_scores = executor.map(
+                lambda index: judge_unordered_set_overall(
+                    questions[index], y_pred_raw[index], y_true_raw[index]
+                ),
+                unordered_indices,
+            )
+            for index, score in zip(unordered_indices, unordered_scores):
+                scores[index] = score
+
+    average = sum(scores) / len(scores) if scores else 0.0
+    return scores, average, routes
 
 if __name__ == "__main__":
     questions = [
