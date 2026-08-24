@@ -140,6 +140,11 @@ def route_metric(
 ) -> MetricRoute:
     """Select and cache the metric for one question, independent of predictions."""
     default_metric = default_metric_for_level(level)
+    if level is not None and level <= 2:
+        return MetricRoute(
+            metric="legacy_type_a",
+            reason="Level 1/2 routed by rule to legacy_type_a.",
+        )
     conflict = detect_contract_conflict(question, ground_truth)
     if conflict:
         return MetricRoute(

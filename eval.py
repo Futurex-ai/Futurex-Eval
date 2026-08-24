@@ -3,6 +3,7 @@ from tenacity import retry, stop_after_attempt, wait_random_exponential
 from concurrent.futures import ThreadPoolExecutor
 import traceback
 import concurrent.futures
+import ast
 import re
 from llm_judge_level_34 import judge_level_34_score, judge_unordered_set_overall
 from llm_config import get_llm_config, get_llm_timeout
@@ -10,6 +11,49 @@ from metric_router import MetricRoute, route_questions
 from utils import to_float
 import os
 from openai import OpenAI
+
+
+def extract_boxed_for_type_b(text):
+    """Strip a surrounding ``\\boxed{...}`` / ``\\text{...}`` wrapper if present."""
+    if not isinstance(text, str):
+        return str(text)
+    match = re.search(r"(?:oxed|ext)\{(.*?)\}", text, flags=re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return text
+
+
+def _normalize_type_a_label(item):
+    """Normalise one Type-A label so \\boxed{A}/\\text{A} compares equal to A."""
+    text = str(item).strip().strip("\"'")
+    match = re.fullmatch(r"\\(?:boxed|text)\{(.*)\}", text, flags=re.DOTALL)
+    if match:
+        text = match.group(1).strip().strip("\"'")
+    if re.fullmatch(r"[A-Za-z]", text):
+        return text.upper()
+    if re.fullmatch(r"yes|no", text, flags=re.IGNORECASE):
+        return "Yes" if text.lower() == "yes" else "No"
+    return text
+
+
+def _as_type_a_labels(value):
+    """Coerce a raw Type-A ground-truth / prediction into a normalised label list."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                value = ast.literal_eval(text)
+            except Exception:
+                value = [text]
+        else:
+            value = [text]
+    if isinstance(value, (set, list, tuple)):
+        items = list(value)
+    else:
+        items = [value]
+    return [_normalize_type_a_label(item) for item in items if str(item).strip() != ""]
 
 def log_before_retry(retry_state):
     """Log before each retry"""
@@ -116,6 +160,8 @@ def estimate_score_level_1_2(
     
     f1_scores = []
     for y_true, y_pred in zip(y_true_raw, y_pred_raw):
+        y_true = _as_type_a_labels(y_true)
+        y_pred = _as_type_a_labels(y_pred)
         if len(y_true) == 1:
             f1_scores.append(1.0 if y_true == y_pred else 0.0)
             continue
@@ -179,6 +225,10 @@ def estimate_score_level_3_4(questions, y_true_raw, y_pred_raw, stds, max_worker
     def _normalize_gt(answer):
         if not isinstance(answer, list):
             answer = [answer]
+        answer = [
+            extract_boxed_for_type_b(item) if isinstance(item, str) else item
+            for item in answer
+        ]
         if len(answer) == 1:
             if isinstance(answer[0], str):
                 try:
